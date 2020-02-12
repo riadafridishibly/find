@@ -1,2 +1,2 @@
 # find
-Unix find implementation in golang
+Unix find implementation in golang.
