@@ -7,50 +7,68 @@ import (
 	"sync"
 )
 
-type filesHandler struct {
-	ch         chan string
-	filterFunc func(string) bool
+type walker struct {
+	walkFunc filepath.WalkFunc
+	wg       sync.WaitGroup
+	jobs     chan string
+	done     chan bool
 }
 
-func (fh *filesHandler) all(path string, wg *sync.WaitGroup, c chan bool) {
-	files, err := ioutil.ReadDir(path)
+func (w *walker) addJob(path string) {
+	w.wg.Add(1)
+	select {
+	case w.jobs <- path:
+	default:
+		w.process(path)
+	}
+}
+
+func (w *walker) process(path string) {
+	defer w.wg.Done()
+
+	fis, err := ioutil.ReadDir(path)
 
 	if err != nil {
 		return
 	}
 
-	for _, f := range files {
+	for _, f := range fis {
 		currentPath := filepath.Join(path, f.Name())
-		if f.IsDir() {
-			wg.Add(1)
-			go func() {
-				c <- true
-				fh.all(currentPath, wg, c)
-				<-c
-				wg.Done()
-			}()
-		}
+		w.walkFunc(currentPath, nil, nil)
 
-		if fh.filterFunc(f.Name()) {
-			fh.ch <- currentPath
+		if f.IsDir() {
+			w.addJob(currentPath)
 		}
 	}
 }
 
-// WalkDir walks a directory concurrently and returns path in string
-func WalkDir(root string, filterFunc func(string) bool) <-chan string {
-	d := &filesHandler{
-		ch:         make(chan string, 128),
-		filterFunc: filterFunc,
+func (w *walker) worker() {
+	for job := range w.jobs {
+		w.process(job)
+	}
+}
+
+func (w *walker) walk(path string, walkFn filepath.WalkFunc) {
+	for i := 0; i < 2*runtime.NumCPU(); i++ {
+		go w.worker()
 	}
 
-	go func() {
-		wg := &sync.WaitGroup{}
-		c := make(chan bool, runtime.NumCPU()*2)
-		d.all(root, wg, c)
-		wg.Wait()
-		close(d.ch)
-	}()
+	w.addJob(path)
+	w.wg.Wait()
+	close(w.jobs)
 
-	return d.ch
+	w.done <- true
+}
+
+// Walk walks a directory concurrently and returns path in string
+func Walk(root string, walkFn filepath.WalkFunc) <-chan bool {
+	w := &walker{
+		jobs:     make(chan string, 512),
+		walkFunc: walkFn,
+		done:     make(chan bool),
+	}
+
+	go w.walk(root, walkFn)
+
+	return w.done
 }

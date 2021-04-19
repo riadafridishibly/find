@@ -38,9 +38,23 @@ func main() {
 		return regex.MatchString(filePath)
 	}
 
-	results := walk.WalkDir(rootDir, filterFunc)
+	ch := make(chan string, 1024)
 
-	for filePath := range results {
+	walkFn := func(path string, info os.FileInfo, err error) error {
+		if filterFunc(path) {
+			ch <- path
+		}
+		return nil
+	}
+
+	done := walk.Walk(rootDir, walkFn)
+
+	go func() {
+		<-done
+		close(ch)
+	}()
+
+	for filePath := range ch {
 		fmt.Println(filePath)
 	}
 }
